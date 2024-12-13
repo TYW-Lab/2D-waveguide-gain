@@ -1,6 +1,32 @@
-This repository is based on the source code for the paper Scaling on-chip photonic neural processors using arbitrarily programmable wave propagation. Its purpose is to implement saturable gain using realistic models and parameters.
+This repository is based on the source code for [1]. Its purpose is to implement saturable gain using realistic models and parameters.
 
-Still in progress...
+The code is designed to run in a Jupyter notebook environment.
+
+Python version: Python 3.11.9
+Packages used are in requirements.txt. To install them all at once, run something like
+pip install -r requirements.txt
+
+Currently, only one of the Jupyter Notebook files in the examples folder is in use: beam propagation through realistically pixelated index profiles-test.ipynb
+
+This notebook has been rewritten. Tasks done in it include: 
+
+- Reproducing plots in Scaling on-chip photonic neural processors using arbitrarily programmable wave propagation. Its purpose is to implement saturable gain using realistic models and parameters.
+- Designing a simple lens
+- Testing optical gain by directly setting the imaginary part of delta_n to negative
+- Testing the newly implemented model that updates both the real and imaginary parts of n as a function of injected current and optical power (still in progress. see the notebook for details)
+
+The notebook imports from two custom Python files made by the authors of [1]: simulation.py and DMD_patterns.py
+simulation.py initiates the waveguide objects and runs the simulation. DMD_patterns.py helps with simulating the creation of DMD (Digital Micromirror Device) patterns, which will be mapped to the waveguide to induce refractive index changes.
+
+I heavily modified simulation.py to include a new class called "Material", which takes material parameters and returns the change in refractive index (both real and imaginary parts) as a function of injected current. I also made many changes to the existing WaveguideSimulation class to make sure it integrates properly with the Material class.
+
+Both WaveguideSimulation and Material still require many changes before they can be used effectively. WaveguideSimulation has problems such as deprecation warnings, unintuitive parameter names, and a lack of comments. The Material class sometimes triggers a "divide by zero" warning, causing the simulation to fail. The simulation result also looks problematic because its delta_n map includes unexpectedly high values of delta_n.
+
+I will attempt to solve these problems during the week of 12/19/2024
+
+
+
+
 
 
 Below is their original README:
