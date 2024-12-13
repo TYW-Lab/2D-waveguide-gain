@@ -20,7 +20,7 @@ import sympy as sp
 
 
 class WaveguideSimulation():
-    def __init__(self, neff, Lx, Lz, Nx, Nz, diffusion_length, Ncom=1, I_sat=float('inf'), thickness = 1*u.um, material = None, current = None):
+    def __init__(self, neff, Lx, Lz, Nx, Nz, diffusion_length, Ncom=1, I_sat=float('inf'), thickness = 1*u.um, material = None, current = None, active = False):
         # all the units are in astropy.units (u)
         #all the units for length are in microns!
         self.n =  neff # effective refractive index for the slab waveguide
@@ -43,11 +43,13 @@ class WaveguideSimulation():
         self.z_axis = np.linspace(0, self.Lz, self.Nz) # array holding z-coordinates in um
 
         self.dz = self.z_axis[1]-self.z_axis[0] # stepsize in propagation direction
-
-        if material is None:
-            self.material = Material(dx = self.dx, dz = self.dz, thickness=thickness)
+        if not active:
+            self.material = Material(dx = self.dx, dz = self.dz, dnrdN = 0*u.cm**3, a0 = 0*u.cm**2)
         else:
-            self.material = material
+            if material is None:
+                self.material = Material(dx = self.dx, dz = self.dz, thickness=thickness)
+            else:
+                self.material = material
 
         if current is None:
             self.current = torch.from_numpy(np.zeros((self.Nz, self.Nx), dtype=np.float32))
@@ -97,16 +99,6 @@ class WaveguideSimulation():
         # Set saturation intensity to I_sat (deifined as E^2 for simplicity)
         self.I_sat = I_sat
 
-    def update_delta_n_slice(self, delta_n_slice, a):
-        if self.I_sat != np.inf:
-            R = torch.abs(a)**2 / self.I_sat
-            n_i_new = torch.imag(delta_n_slice) / (1 + R) # Marculescu Eqn. 2.22
-            n_i_new = torch.imag(delta_n_slice) / (1 + R * torch.exp(-self.k0dz * n_i_new)) # Correction to account for grid mismatch
-            delta_n_slice.copy_(torch.real(delta_n_slice) + 1j * n_i_new)
-            return torch.real(delta_n_slice) + 1j * n_i_new
-        else:
-            return delta_n_slice
-
     def get_delta_n_active_slice(self, current_slice, a):
         # Parameters: current_slice at z+dz/2 and light field a at z
         # Returns: delta_n at z+dz/2
@@ -132,18 +124,20 @@ class WaveguideSimulation():
         Use this if you want code to be fast!
         a: The input beam!
         """
-        if delta_n is None: delta_n_SS = self.delta_n_SS.to(a.device)
+        if delta_n is None: delta_n = self.delta_n.to(a.device)
         else: 
             self.set_delta_n(delta_n.to(a.device))
-            delta_n_SS = self.delta_n_SS
-            
-        difr_list = self.difr_list.to(a.device)
-
-        for (z_ind, delta_n_slice) in enumerate(delta_n_SS):
-            self.update_delta_n_slice(delta_n_slice, a)
-            a = torch.exp(1j*self.k0dz*delta_n_slice) * a
+            delta_n = self.delta_n
+        
+        current = self.current
+        delta_n_active = self.delta_n_active
+        for z_ind, (delta_n_static_slice, current_slice) in enumerate(zip(delta_n, current)):
+            delta_n_active_slice = self.get_delta_n_active_slice(current_slice, a)
+            delta_n_active[z_ind] = delta_n_active_slice
+            total_delta_n_slice = delta_n_static_slice + delta_n_active_slice
+            a = torch.exp(1j*self.k0dz*total_delta_n_slice) * a
             ak = fft.fft(a)
-            ak = difr_list * ak
+            ak = self.difr_list.to(a.device) * ak
             a = fft.ifft(ak)
         return a
     
@@ -155,20 +149,18 @@ class WaveguideSimulation():
         self.ak_list = []
         self.z_list = []
 
-        if delta_n is None: delta_n_SS = self.delta_n_SS.to(a.device)
+        if delta_n is None: delta_n = self.delta_n.to(a.device)
         else: 
             self.set_delta_n(delta_n.to(a.device))
-            delta_n_SS = self.delta_n_SS
+            delta_n = self.delta_n
         
         z = 0*u.um
         current = self.current
         delta_n_active = self.delta_n_active
-        for z_ind, (delta_n_slice, delta_n_static_slice, current_slice) in enumerate(zip(delta_n_SS, self.delta_n, current)):
-            deta_n_slice = self.update_delta_n_slice(delta_n_slice, a)
+        for z_ind, (delta_n_static_slice, current_slice) in enumerate(zip(delta_n, current)):
             delta_n_active_slice = self.get_delta_n_active_slice(current_slice, a)
-            #delta_n_active_slice = 0
             delta_n_active[z_ind] = delta_n_active_slice
-            total_delta_n_slice = deta_n_slice + delta_n_static_slice + delta_n_active_slice
+            total_delta_n_slice = delta_n_static_slice + delta_n_active_slice
             a = torch.exp(1j*self.k0dz*total_delta_n_slice) * a
             ak = fft.fft(a)
             ak = self.difr_list.to(a.device) * ak
@@ -180,20 +172,6 @@ class WaveguideSimulation():
                 self.z_list.append(copy.deepcopy(z))
             z += self.dz
 
-        '''
-        for (z_ind, delta_n_slice) in enumerate(delta_n_SS):
-            self.update_delta_n_slice(delta_n_slice, a)
-            a = torch.exp(1j*self.k0dz*delta_n_slice) * a
-            ak = fft.fft(a)
-            ak = self.difr_list.to(a.device) * ak
-            a = fft.ifft(ak)
-
-            if z_ind % self.Ncom == 0:
-                self.a_list.append(a)
-                self.ak_list.append(torch.fft.ifftshift(ak))
-                self.z_list.append(copy.deepcopy(z))
-            z += self.dz
-        '''
         self.Emat_x = torch.stack(self.a_list)
         self.Emat_f = torch.stack(self.ak_list)
         self.z_list = u.Quantity(self.z_list)
@@ -222,8 +200,8 @@ class WaveguideSimulation():
 
     def _plot_delta_n(self, xlim=200, steady_state = False, real = True):
         wg = self
-        if steady_state: delta_n = wg.delta_n_SS + wg.delta_n_active
-        else: delta_n = wg.delta_n
+        if steady_state: delta_n = wg.delta_n + wg.delta_n_active
+        else: delta_n = wg.delta_n + wg.delta_n_active_0
         delta_n = delta_n.to(dtype=torch.complex128)
         if real: data = delta_n.real
         else: data = delta_n.imag
@@ -283,6 +261,8 @@ class WaveguideSimulation():
 
         fig, axs = plt.subplots(3, 2, figsize=(10, 6))
         fig.subplots_adjust(wspace=0.4)
+
+        self.delta_n_active_0 = wg.material.update(self.current,torch.from_numpy(np.zeros((self.Nz, self.Nx), dtype=np.float32)))
 
         plt.sca(axs.flatten()[0])
         self._plot_delta_n(xlim=xlim,steady_state=False,real=True)
